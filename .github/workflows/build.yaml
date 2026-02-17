@@ -3,12 +3,252 @@ name: Build, QA, Release
 on: push
 
 permissions:
-  pages: write
-  id-token: write
   contents: write
 
-jobs:
-  build_font:
-    uses: notofonts/notobuilder/.github/workflows/build.yaml@main
-    secrets: inherit
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Build fonts
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up latest harfbuzz
+        uses: notofonts/install-harfbuzz-action@main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: eifinger/setup-uv@v1
+        with:
+          enable-cache: true
+
+      - name: Install Python deps
+        run: |
+          uv venv venv
+          . venv/bin/activate
+          uv pip install -r requirements.txt
+          touch venv/touchfile
+
+      - name: Build fonts
+        run: |
+          . venv/bin/activate
+          make build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fonts
+          path: fonts
+
+  fontspector:
+    name: QA - Fontspector
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download fonts
+        uses: actions/download-artifact@v4
+        with:
+          name: fonts
+          path: fonts
+
+      - name: Set up Fontspector
+        uses: fonttools/setup-fontspector@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: eifinger/setup-uv@v1
+        with:
+          enable-cache: true
+
+      - name: Install Python deps
+        run: |
+          uv venv venv
+          . venv/bin/activate
+          uv pip install -r requirements.txt
+          touch venv/touchfile
+
+      - name: Run fontspector
+        run: |
+          . venv/bin/activate
+          python3 -m notoqa
+        continue-on-error: true
+
+      - name: Upload QA results
+        uses: actions/upload-artifact@v4
+        with:
+          name: fontspector-results
+          path: out
+
+  proof:
+    name: QA - Proof documents
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download fonts
+        uses: actions/download-artifact@v4
+        with:
+          name: fonts
+          path: fonts
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libxml2-dev libxslt1-dev libcairo2-dev
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: eifinger/setup-uv@v1
+        with:
+          enable-cache: true
+
+      - name: Install Python deps
+        run: |
+          uv venv venv
+          . venv/bin/activate
+          uv pip install -r requirements.txt
+          touch venv/touchfile
+
+      - name: Generate proof documents
+        run: |
+          . venv/bin/activate
+          mkdir -p out/proof
+          for family_dir in fonts/*; do
+            family=$(basename "$family_dir")
+            diffenator2 proof $(find "fonts/$family/unhinted/ttf" -type f) -o "out/proof/$family"
+          done
+
+      - name: Upload proof documents
+        uses: actions/upload-artifact@v4
+        with:
+          name: proof
+          path: out
+
+  regression:
+    name: QA - Regression test
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download fonts
+        uses: actions/download-artifact@v4
+        with:
+          name: fonts
+          path: fonts
+
+      - name: Set up diffenator3
+        uses: notofonts/install-diffenator3-action@main
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libxml2-dev libxslt1-dev libcairo2-dev
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: eifinger/setup-uv@v1
+        with:
+          enable-cache: true
+
+      - name: Install Python deps
+        run: |
+          uv venv venv
+          . venv/bin/activate
+          uv pip install -r requirements.txt
+          touch venv/touchfile
+
+      - name: Run regression tests
+        run: |
+          . venv/bin/activate
+          python3 -m notoqa.regression
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload regression results
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression
+          path: out
+
+  release:
+    name: Create release
+    if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
+    needs:
+      - build
+      - fontspector
+      - proof
+      - regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: eifinger/setup-uv@v1
+        with:
+          enable-cache: true
+
+      - name: Install Python deps
+        run: |
+          uv venv venv
+          . venv/bin/activate
+          uv pip install -r requirements.txt
+          touch venv/touchfile
+
+      - name: Download fonts
+        uses: actions/download-artifact@v4
+        with:
+          name: fonts
+          path: fonts
+
+      - name: Validate tag format
+        id: check_tag
+        run: |
+          . venv/bin/activate
+          python3 scripts/check-tag.py ${{ github.ref_name }}
+
+      - name: Extract release notes from tag
+        run: |
+          echo 'RELEASE_NOTES<<EOF' >> "$GITHUB_ENV"
+          git show -s --format=%B ${{ github.ref_name }} | tail -n +4 >> "$GITHUB_ENV"
+          echo 'EOF' >> "$GITHUB_ENV"
+
+      - name: Create release zip
+        run: |
+          cd fonts
+          cp ../*.txt .
+          zip -x requirements.txt -r ../${{ github.ref_name }}.zip ${{ steps.check_tag.outputs.family }}/ *.txt
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: ${{ env.RELEASE_NOTES }}
+          files: ${{ github.ref_name }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
