@@ -6671,7 +6671,7 @@ value = GOOG;
 },
 {
 key = versionString;
-value = "Version 2.014";
+value = "Version 1.0.0";
 }
 );
 settings = {
@@ -6781,6 +6781,6 @@ tH = "75";
 };
 GSDontShowVersionAlert = 1;
 };
-versionMajor = 2;
-versionMinor = 14;
+versionMajor = 1;
+versionMinor = 0;
 }
